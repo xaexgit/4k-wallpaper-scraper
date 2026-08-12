@@ -22,6 +22,7 @@ jobs:
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: '**/requirements.txt'
 
       - name: Install Dependencies
         run: |
@@ -46,16 +47,25 @@ jobs:
       - name: Verify Scraped Assets
         run: |
           echo "=== Downloaded Images ==="
-          ls -lh downloads/
+          ls -lh downloads/ || echo "No downloads folder found"
           echo "=== Manifest wall.json ==="
-          head -n 25 wall.json
+          if [ -f wall.json ]; then head -n 25 wall.json; fi
 
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # 1. Check if downloads folder exists and contains files
+          if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
+            echo "::error::No images were downloaded to downloads/! Aborting release."
+            exit 1
+          fi
+
+          # 2. Safely capture all download files and wall.json
+          FILES=(downloads/* wall.json)
+
+          # 3. Create the release with all attached assets
           gh release create "${{ env.RELEASE_TAG }}" \
-            downloads/* \
-            wall.json \
+            "${FILES[@]}" \
             --title "Nature Wallpapers (${{ env.RELEASE_TAG }})" \
             --notes "Automated weekly batch scrape of 4K nature wallpapers from 4KWallpapers.com."
