@@ -2,7 +2,6 @@ import json
 import logging
 import mimetypes
 import re
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -23,8 +22,8 @@ BASE_URL = "https://4kwallpapers.com"
 CATEGORY_URL = f"{BASE_URL}/nature/"
 OUTPUT_JSON = Path("4k_nature.json")
 
+# Number of listing pages to scrape
 MAX_PAGES = 3
-DELAY_BETWEEN_REQ = 1.0
 
 
 class WallpaperLinkScraper:
@@ -44,15 +43,15 @@ class WallpaperLinkScraper:
         session.mount("https://", adapter)
         session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://4kwallpapers.com/",
         })
         return session
 
-    def get_wallpaper_links(self, page_num: int) -> List[str]:
+    def parse_listing_page(self, page_num: int) -> List[Dict]:
         url = CATEGORY_URL if page_num == 1 else f"{CATEGORY_URL}?page={page_num}"
-        logger.info(f"Fetching page {page_num}: {url}")
+        logger.info(f"Fetching listing page {page_num}: {url}")
 
         try:
             resp = self.session.get(url, timeout=15)
@@ -62,103 +61,93 @@ class WallpaperLinkScraper:
             return []
 
         soup = BeautifulSoup(resp.text, "html.parser")
-        links = []
+        items = []
 
+        # Find all wallpaper item containers or anchor links on the listing grid
+        # 4kwallpapers uses links wrapping picture/img tags for each wallpaper card
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
-            if "/nature/" in href and href.endswith(".html") and href != "/nature/":
-                full_url = href if href.startswith("http") else f"{BASE_URL}{href}"
-                if full_url not in links:
-                    links.append(full_url)
-
-        logger.info(f"Found {len(links)} wallpaper pages on page {page_num}")
-        return links
-
-    def parse_wallpaper_detail(self, detail_url: str) -> Optional[Dict]:
-        logger.info(f"Parsing detail page: {detail_url}")
-        
-        # Extract wallpaper numeric ID from URL (e.g., 'mountain-landscape-26973.html' -> '26973')
-        id_match = re.search(r"-(\d+)\.html$", detail_url)
-        wallpaper_id = id_match.group(1) if id_match else None
-
-        img_url = None
-        title = "4K Nature Wallpaper"
-
-        try:
-            resp = self.session.get(detail_url, timeout=15)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-
-            # Extract Title
-            h1 = soup.find("h1")
-            if h1:
-                title = h1.text.strip()
-
-            # Strategy 1: Check HTML elements (img tags, source tags, picture elements)
-            img_tag = (
-                soup.find("img", id="wallpaper") or
-                soup.find("img", class_=re.compile(r"wallpaper", re.I)) or
-                soup.select_one("picture img")
-            )
             
-            if img_tag:
-                img_url = img_tag.get("src") or img_tag.get("data-src")
+            # Filter for wallpaper detail links (e.g. /nature/mountain-landscape-26973.html)
+            if not ("/nature/" in href and href.endswith(".html") and href != "/nature/"):
+                continue
 
-        except requests.RequestException as e:
-            logger.warning(f"Error requesting page {detail_url}, using ID fallback: {e}")
+            full_detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
 
-        # Strategy 2: Fallback to URL pattern logic using extracted ID
-        if not img_url and wallpaper_id:
-            img_url = f"https://4kwallpapers.com/images/walls/thumbs_3t/{wallpaper_id}.png"
+            # Look for preview image inside this card (img, picture > source, etc.)
+            img_tag = a_tag.find("img")
+            source_tag = a_tag.find("source")
 
-        if not img_url:
-            logger.warning(f"Could not determine image link for {detail_url}")
-            return None
+            raw_img_src = None
 
-        if img_url.startswith("/"):
-            img_url = f"{BASE_URL}{img_url}"
+            # 1. Try <source srcset="...">
+            if source_tag and source_tag.get("srcset"):
+                raw_img_src = source_tag["srcset"].split(",")[0].strip().split(" ")[0]
 
-        # Clean filename extraction
-        raw_filename = f"{wallpaper_id}.png" if wallpaper_id else img_url.split("/")[-1].split("?")[0]
-        ext = raw_filename.split(".")[-1].lower() if "." in raw_filename else "png"
-        mime_type, _ = mimetypes.guess_type(raw_filename)
-        quality = "4K" if "4k" in title.lower() else "HD"
+            # 2. Try <img src="..."> or data-src
+            if not raw_img_src and img_tag:
+                raw_img_src = (
+                    img_tag.get("src") or 
+                    img_tag.get("data-src") or 
+                    img_tag.get("srcset")
+                )
 
-        return {
-            "id": wallpaper_id,
-            "name": raw_filename,
-            "title": title,
-            "quality": quality,
-            "image_url": img_url,
-            "source_page": detail_url,
-            "file_type": mime_type or f"image/{ext}",
-            "file_extension": ext
-        }
+            if not raw_img_src:
+                continue
+
+            # Ensure image link is absolute
+            image_url = raw_img_src if raw_img_src.startswith("http") else f"{BASE_URL}{raw_img_src}"
+
+            # Extract Title & ID
+            title = "4K Nature Wallpaper"
+            if img_tag and img_tag.get("alt"):
+                title = img_tag["alt"].strip()
+            elif a_tag.get("title"):
+                title = a_tag["title"].strip()
+
+            id_match = re.search(r"-(\d+)\.html$", href)
+            wallpaper_id = id_match.group(1) if id_match else None
+
+            filename = image_url.split("/")[-1].split("?")[0]
+            ext = filename.split(".")[-1].lower() if "." in filename else "jpg"
+            mime_type, _ = mimetypes.guess_type(filename)
+
+            item = {
+                "id": wallpaper_id,
+                "title": title,
+                "quality": "4K" if "4k" in title.lower() else "HD",
+                "image_url": image_url,  # ACTUAL LIVE PREVIEW LINK FROM DOM
+                "source_page": full_detail_url,
+                "file_type": mime_type or f"image/{ext}",
+                "file_extension": ext
+            }
+
+            # Avoid duplicates
+            if not any(x["image_url"] == image_url for x in items):
+                items.append(item)
+
+        logger.info(f"Extracted {len(items)} live wallpaper links from page {page_num}")
+        return items
 
     def run(self):
-        wallpapers = []
+        all_wallpapers = []
         for page in range(1, MAX_PAGES + 1):
-            detail_links = self.get_wallpaper_links(page)
-            if not detail_links:
+            items = self.parse_listing_page(page)
+            if not items:
                 break
-
-            for link in detail_links:
-                time.sleep(DELAY_BETWEEN_REQ)
-                item = self.parse_wallpaper_detail(link)
-                if item and item not in wallpapers:
-                    wallpapers.append(item)
+            all_wallpapers.extend(items)
 
         payload = {
             "scraped_at": datetime.now(timezone.utc).isoformat(),
             "category": "nature",
-            "total_wallpapers": len(wallpapers),
-            "wallpapers": wallpapers
+            "total_wallpapers": len(all_wallpapers),
+            "wallpapers": all_wallpapers
         }
 
         with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
-        logger.info(f"Successfully generated {OUTPUT_JSON} with {len(wallpapers)} live links.")
+        logger.info(f"Successfully generated {OUTPUT_JSON} with {len(all_wallpapers)} REAL live links.")
 
 
 if __name__ == "__main__":
