@@ -4,7 +4,7 @@ import mimetypes
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,13 +16,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler()]
 )
-logger = logging.getLogger("WallpaperLinkScraper")
+logger = logging.getLogger("AbstractWallpaperScraper")
 
 BASE_URL = "https://4kwallpapers.com"
-CATEGORY_URL = f"{BASE_URL}/nature/"
-OUTPUT_JSON = Path("4k_nature.json")
+CATEGORY_NAME = "abstract"
+CATEGORY_URL = f"{BASE_URL}/{CATEGORY_NAME}/"
+OUTPUT_JSON = Path(f"4k_{CATEGORY_NAME}.json")
 
-# Number of listing pages to scrape
+# Number of listing pages to scrape (adjust as needed)
 MAX_PAGES = 3
 
 
@@ -63,18 +64,16 @@ class WallpaperLinkScraper:
         soup = BeautifulSoup(resp.text, "html.parser")
         items = []
 
-        # Find all wallpaper item containers or anchor links on the listing grid
-        # 4kwallpapers uses links wrapping picture/img tags for each wallpaper card
+        # Find all wallpaper item containers on the abstract listing grid
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             
-            # Filter for wallpaper detail links (e.g. /nature/mountain-landscape-26973.html)
-            if not ("/nature/" in href and href.endswith(".html") and href != "/nature/"):
+            # Filter for abstract category detail links
+            if not (f"/{CATEGORY_NAME}/" in href and href.endswith(".html") and href != f"/{CATEGORY_NAME}/"):
                 continue
 
             full_detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
 
-            # Look for preview image inside this card (img, picture > source, etc.)
             img_tag = a_tag.find("img")
             source_tag = a_tag.find("source")
 
@@ -95,11 +94,9 @@ class WallpaperLinkScraper:
             if not raw_img_src:
                 continue
 
-            # Ensure image link is absolute
             image_url = raw_img_src if raw_img_src.startswith("http") else f"{BASE_URL}{raw_img_src}"
 
-            # Extract Title & ID
-            title = "4K Nature Wallpaper"
+            title = f"4K {CATEGORY_NAME.title()} Wallpaper"
             if img_tag and img_tag.get("alt"):
                 title = img_tag["alt"].strip()
             elif a_tag.get("title"):
@@ -116,13 +113,12 @@ class WallpaperLinkScraper:
                 "id": wallpaper_id,
                 "title": title,
                 "quality": "4K" if "4k" in title.lower() else "HD",
-                "image_url": image_url,  # ACTUAL LIVE PREVIEW LINK FROM DOM
+                "image_url": image_url,
                 "source_page": full_detail_url,
                 "file_type": mime_type or f"image/{ext}",
                 "file_extension": ext
             }
 
-            # Avoid duplicates
             if not any(x["image_url"] == image_url for x in items):
                 items.append(item)
 
@@ -139,7 +135,7 @@ class WallpaperLinkScraper:
 
         payload = {
             "scraped_at": datetime.now(timezone.utc).isoformat(),
-            "category": "nature",
+            "category": CATEGORY_NAME,
             "total_wallpapers": len(all_wallpapers),
             "wallpapers": all_wallpapers
         }
@@ -147,7 +143,7 @@ class WallpaperLinkScraper:
         with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
-        logger.info(f"Successfully generated {OUTPUT_JSON} with {len(all_wallpapers)} REAL live links.")
+        logger.info(f"Successfully generated {OUTPUT_JSON} with {len(all_wallpapers)} live links.")
 
 
 if __name__ == "__main__":
