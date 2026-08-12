@@ -1,0 +1,61 @@
+name: 4K Wallpapers Scraper & Release
+
+on:
+  schedule:
+    # Runs every Monday at 06:00 AM UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scrape-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate Release Tag
+        id: tag
+        run: |
+          TAG_NAME="v$(date -u +'%Y.%m.%d-%H%M')"
+          echo "RELEASE_TAG=$TAG_NAME" >> $GITHUB_ENV
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Run Wallpaper Scraper
+        run: |
+          python scraper.py
+
+      - name: Generate wall.json
+        run: |
+          python generate_release.py
+
+      - name: Verify Scraped Assets
+        run: |
+          echo "=== Downloaded Images ==="
+          ls -lh downloads/
+          echo "=== Manifest wall.json ==="
+          head -n 25 wall.json
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ env.RELEASE_TAG }}" \
+            downloads/* \
+            wall.json \
+            --title "Nature Wallpapers (${{ env.RELEASE_TAG }})" \
+            --notes "Automated weekly batch scrape of 4K nature wallpapers from 4KWallpapers.com."
