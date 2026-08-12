@@ -42,7 +42,7 @@ jobs:
           echo "=== Preview out/out.json ==="
           head -n 30 out/out.json
 
-      - name: Commit out/out.json
+      - name: Commit and Push out/out.json
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
@@ -53,13 +53,3 @@ jobs:
             git commit -m "update: refresh out/out.json wallpaper links [skip ci]"
             git push
           fi
-
-      - name: Create GitHub Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG_NAME="v$(date -u +'%Y.%m.%d-%H%M')"
-          gh release create "$TAG_NAME" \
-            out/out.json \
-            --title "Live Wallpaper Links Update ($TAG_NAME)" \
-            --notes "Automated scrape for all categories configured in links.json saved to out/out.json."
