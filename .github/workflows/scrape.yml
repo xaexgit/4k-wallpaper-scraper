@@ -1,4 +1,4 @@
-name: 4K Wallpapers Scraper & Release
+name: 4K Wallpapers Link Scraper
 
 on:
   schedule:
@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  scrape-and-release:
+  scrape-and-save:
     runs-on: ubuntu-latest
 
     steps:
@@ -29,43 +29,37 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Generate Release Tag
-        id: tag
-        run: |
-          TAG_NAME="v$(date -u +'%Y.%m.%d-%H%M')"
-          echo "RELEASE_TAG=$TAG_NAME" >> $GITHUB_ENV
-          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
-
-      - name: Run Wallpaper Scraper
+      - name: Scrape Wallpaper Links
         run: |
           python scraper.py
 
-      - name: Generate wall.json
+      - name: Verify Generated wall.json
         run: |
-          python generate_release.py
+          if [ ! -f wall.json ]; then
+            echo "::error::wall.json was not created!"
+            exit 1
+          fi
+          echo "=== Preview wall.json ==="
+          head -n 25 wall.json
 
-      - name: Verify Scraped Assets
+      - name: Commit wall.json to Repository
         run: |
-          echo "=== Downloaded Images ==="
-          ls -lh downloads/ || echo "No downloads folder found"
-          echo "=== Manifest wall.json ==="
-          if [ -f wall.json ]; then head -n 25 wall.json; fi
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add wall.json
+          if git diff --staged --quiet; then
+            echo "No changes in wall.json."
+          else
+            git commit -m "update: refresh wall.json live wallpaper links [skip ci]"
+            git push
+          fi
 
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 1. Check if downloads folder exists and contains files
-          if [ ! -d "downloads" ] || [ -z "$(ls -A downloads 2>/dev/null)" ]; then
-            echo "::error::No images were downloaded to downloads/! Aborting release."
-            exit 1
-          fi
-
-          # 2. Safely capture all download files and wall.json
-          FILES=(downloads/* wall.json)
-
-          # 3. Create the release with all attached assets
-          gh release create "${{ env.RELEASE_TAG }}" \
-            "${FILES[@]}" \
-            --title "Nature Wallpapers (${{ env.RELEASE_TAG }})" \
-            --notes "Automated weekly batch scrape of 4K nature wallpapers from 4KWallpapers.com."
+          TAG_NAME="v$(date -u +'%Y.%m.%d-%H%M')"
+          gh release create "$TAG_NAME" \
+            wall.json \
+            --title "Nature Wallpaper Links ($TAG_NAME)" \
+            --notes "Automated weekly scrape of live 4K wallpaper links."
