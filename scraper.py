@@ -21,6 +21,7 @@ logger = logging.getLogger("MultiCategoryWallpaperScraper")
 
 BASE_URL = "https://4kwallpapers.com"
 LINKS_CONFIG_FILE = Path("links.json")
+OUTPUT_FILE = Path("out/out.json")
 
 # Number of listing pages to scrape per category
 MAX_PAGES = 3
@@ -120,6 +121,7 @@ class WallpaperLinkScraper:
             item = {
                 "id": wallpaper_id,
                 "title": title,
+                "category": category_name,
                 "quality": "4K" if "4k" in title.lower() else "HD",
                 "image_url": image_url,
                 "source_page": full_detail_url,
@@ -133,9 +135,8 @@ class WallpaperLinkScraper:
         logger.info(f"[{category_name.upper()}] Extracted {len(items)} live links from page {page_num}")
         return items
 
-    def scrape_category(self, category_url: str):
+    def scrape_category(self, category_url: str) -> Dict:
         category_name = self.get_category_name(category_url)
-        output_file = Path(f"4k_{category_name}.json")
         logger.info(f"--- Starting Scrape for Category: '{category_name}' ---")
 
         all_wallpapers = []
@@ -145,18 +146,12 @@ class WallpaperLinkScraper:
                 break
             all_wallpapers.extend(items)
 
-        payload = {
-            "scraped_at": datetime.now(timezone.utc).isoformat(),
+        return {
             "category": category_name,
             "category_url": category_url,
             "total_wallpapers": len(all_wallpapers),
             "wallpapers": all_wallpapers
         }
-
-        with open(output_file, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
-
-        logger.info(f"Saved {len(all_wallpapers)} wallpapers to {output_file}\n")
 
     def run(self):
         if not LINKS_CONFIG_FILE.exists():
@@ -170,8 +165,28 @@ class WallpaperLinkScraper:
             logger.error("links.json must contain a non-empty list of category URLs.")
             return
 
+        categories_data = []
+        total_wallpapers_count = 0
+
         for url in category_links:
-            self.scrape_category(url)
+            cat_result = self.scrape_category(url)
+            categories_data.append(cat_result)
+            total_wallpapers_count += cat_result["total_wallpapers"]
+
+        payload = {
+            "scraped_at": datetime.now(timezone.utc).isoformat(),
+            "total_categories": len(categories_data),
+            "total_wallpapers": total_wallpapers_count,
+            "data": categories_data
+        }
+
+        # Ensure destination directory 'out/' exists
+        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+        logger.info(f"Successfully generated {OUTPUT_FILE} containing {total_wallpapers_count} wallpapers across {len(categories_data)} categories.")
 
 
 if __name__ == "__main__":
