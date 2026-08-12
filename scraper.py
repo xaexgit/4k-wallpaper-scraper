@@ -21,9 +21,8 @@ logger = logging.getLogger("WallpaperLinkScraper")
 
 BASE_URL = "https://4kwallpapers.com"
 CATEGORY_URL = f"{BASE_URL}/nature/"
-OUTPUT_JSON = Path("wall.json")
+OUTPUT_JSON = Path("4k_nature.json")
 
-# Number of listing pages to scrape (adjust as needed)
 MAX_PAGES = 3
 DELAY_BETWEEN_REQ = 1.0
 
@@ -44,9 +43,9 @@ class WallpaperLinkScraper:
         session.mount("http://", adapter)
         session.mount("https://", adapter)
         session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://4kwallpapers.com/",
         })
         return session
@@ -77,43 +76,56 @@ class WallpaperLinkScraper:
 
     def parse_wallpaper_detail(self, detail_url: str) -> Optional[Dict]:
         logger.info(f"Parsing detail page: {detail_url}")
+        
+        # Extract wallpaper numeric ID from URL (e.g., 'mountain-landscape-26973.html' -> '26973')
+        id_match = re.search(r"-(\d+)\.html$", detail_url)
+        wallpaper_id = id_match.group(1) if id_match else None
+
+        img_url = None
+        title = "4K Nature Wallpaper"
+
         try:
             resp = self.session.get(detail_url, timeout=15)
             resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Extract Title
+            h1 = soup.find("h1")
+            if h1:
+                title = h1.text.strip()
+
+            # Strategy 1: Check HTML elements (img tags, source tags, picture elements)
+            img_tag = (
+                soup.find("img", id="wallpaper") or
+                soup.find("img", class_=re.compile(r"wallpaper", re.I)) or
+                soup.select_one("picture img")
+            )
+            
+            if img_tag:
+                img_url = img_tag.get("src") or img_tag.get("data-src")
+
         except requests.RequestException as e:
-            logger.error(f"Failed to fetch {detail_url}: {e}")
-            return None
+            logger.warning(f"Error requesting page {detail_url}, using ID fallback: {e}")
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-
-        # Extract title
-        h1 = soup.find("h1")
-        title = h1.text.strip() if h1 else "4K Nature Wallpaper"
-
-        # Find direct high-res image link
-        img_url = None
-        download_a = soup.find("a", id="download") or soup.find("a", class_=re.compile(r"download", re.I))
-        if download_a and download_a.get("href"):
-            img_url = download_a["href"]
+        # Strategy 2: Fallback to URL pattern logic using extracted ID
+        if not img_url and wallpaper_id:
+            img_url = f"https://4kwallpapers.com/images/walls/thumbs_3t/{wallpaper_id}.png"
 
         if not img_url:
-            img_tag = soup.find("img", id="wallpaper") or soup.find("img", class_=re.compile(r"wallpaper", re.I))
-            if img_tag and img_tag.get("src"):
-                img_url = img_tag["src"]
-
-        if not img_url:
-            logger.warning(f"No image link found on {detail_url}")
+            logger.warning(f"Could not determine image link for {detail_url}")
             return None
 
         if img_url.startswith("/"):
             img_url = f"{BASE_URL}{img_url}"
 
-        raw_filename = img_url.split("/")[-1].split("?")[0]
-        ext = raw_filename.split(".")[-1].lower() if "." in raw_filename else "jpg"
+        # Clean filename extraction
+        raw_filename = f"{wallpaper_id}.png" if wallpaper_id else img_url.split("/")[-1].split("?")[0]
+        ext = raw_filename.split(".")[-1].lower() if "." in raw_filename else "png"
         mime_type, _ = mimetypes.guess_type(raw_filename)
-        quality = "4K" if "4k" in title.lower() or "3840" in resp.text else "HD"
+        quality = "4K" if "4k" in title.lower() else "HD"
 
         return {
+            "id": wallpaper_id,
             "name": raw_filename,
             "title": title,
             "quality": quality,
