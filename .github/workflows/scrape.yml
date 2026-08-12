@@ -33,19 +33,24 @@ jobs:
         run: |
           python scraper.py
 
-      - name: Verify Generated JSON Files
+      - name: Verify Generated out/out.json
         run: |
-          ls -la 4k_*.json || echo "No JSON files generated!"
+          if [ ! -f out/out.json ]; then
+            echo "::error::out/out.json was not created!"
+            exit 1
+          fi
+          echo "=== Preview out/out.json ==="
+          head -n 30 out/out.json
 
-      - name: Commit Generated JSON Files
+      - name: Commit out/out.json
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add 4k_*.json
+          git add out/out.json
           if git diff --staged --quiet; then
-            echo "No changes detected across wallpaper files."
+            echo "No changes detected in out/out.json."
           else
-            git commit -m "update: refresh live wallpaper category json files [skip ci]"
+            git commit -m "update: refresh out/out.json wallpaper links [skip ci]"
             git push
           fi
 
@@ -55,6 +60,6 @@ jobs:
         run: |
           TAG_NAME="v$(date -u +'%Y.%m.%d-%H%M')"
           gh release create "$TAG_NAME" \
-            4k_*.json \
+            out/out.json \
             --title "Live Wallpaper Links Update ($TAG_NAME)" \
-            --notes "Automated scrape for all categories configured in links.json."
+            --notes "Automated scrape for all categories configured in links.json saved to out/out.json."
