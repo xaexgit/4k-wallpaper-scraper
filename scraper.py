@@ -5,6 +5,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -16,14 +17,12 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler()]
 )
-logger = logging.getLogger("AbstractWallpaperScraper")
+logger = logging.getLogger("MultiCategoryWallpaperScraper")
 
 BASE_URL = "https://4kwallpapers.com"
-CATEGORY_NAME = "abstract"
-CATEGORY_URL = f"{BASE_URL}/{CATEGORY_NAME}/"
-OUTPUT_JSON = Path(f"4k_{CATEGORY_NAME}.json")
+LINKS_CONFIG_FILE = Path("links.json")
 
-# Number of listing pages to scrape (adjust as needed)
+# Number of listing pages to scrape per category
 MAX_PAGES = 3
 
 
@@ -50,26 +49,35 @@ class WallpaperLinkScraper:
         })
         return session
 
-    def parse_listing_page(self, page_num: int) -> List[Dict]:
-        url = CATEGORY_URL if page_num == 1 else f"{CATEGORY_URL}?page={page_num}"
-        logger.info(f"Fetching listing page {page_num}: {url}")
+    @staticmethod
+    def get_category_name(category_url: str) -> str:
+        """Extract category name from URL (e.g. 'https://4kwallpapers.com/cars/' -> 'cars')"""
+        parsed = urlparse(category_url)
+        path_parts = [p for p in parsed.path.split('/') if p]
+        if path_parts:
+            return path_parts[-1].lower()
+        return "unknown"
+
+    def parse_listing_page(self, category_url: str, category_name: str, page_num: int) -> List[Dict]:
+        clean_base_url = category_url.rstrip("/")
+        url = clean_base_url if page_num == 1 else f"{clean_base_url}/?page={page_num}"
+        logger.info(f"[{category_name.upper()}] Fetching listing page {page_num}: {url}")
 
         try:
             resp = self.session.get(url, timeout=15)
             resp.raise_for_status()
         except requests.RequestException as e:
-            logger.error(f"Failed to fetch page {page_num}: {e}")
+            logger.error(f"[{category_name.upper()}] Failed to fetch page {page_num}: {e}")
             return []
 
         soup = BeautifulSoup(resp.text, "html.parser")
         items = []
 
-        # Find all wallpaper item containers on the abstract listing grid
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
             
-            # Filter for abstract category detail links
-            if not (f"/{CATEGORY_NAME}/" in href and href.endswith(".html") and href != f"/{CATEGORY_NAME}/"):
+            # Filter for detail page links within this category
+            if not (f"/{category_name}/" in href and href.endswith(".html") and href != f"/{category_name}/"):
                 continue
 
             full_detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
@@ -96,7 +104,7 @@ class WallpaperLinkScraper:
 
             image_url = raw_img_src if raw_img_src.startswith("http") else f"{BASE_URL}{raw_img_src}"
 
-            title = f"4K {CATEGORY_NAME.title()} Wallpaper"
+            title = f"4K {category_name.title()} Wallpaper"
             if img_tag and img_tag.get("alt"):
                 title = img_tag["alt"].strip()
             elif a_tag.get("title"):
@@ -122,28 +130,48 @@ class WallpaperLinkScraper:
             if not any(x["image_url"] == image_url for x in items):
                 items.append(item)
 
-        logger.info(f"Extracted {len(items)} live wallpaper links from page {page_num}")
+        logger.info(f"[{category_name.upper()}] Extracted {len(items)} live links from page {page_num}")
         return items
 
-    def run(self):
+    def scrape_category(self, category_url: str):
+        category_name = self.get_category_name(category_url)
+        output_file = Path(f"4k_{category_name}.json")
+        logger.info(f"--- Starting Scrape for Category: '{category_name}' ---")
+
         all_wallpapers = []
         for page in range(1, MAX_PAGES + 1):
-            items = self.parse_listing_page(page)
+            items = self.parse_listing_page(category_url, category_name, page)
             if not items:
                 break
             all_wallpapers.extend(items)
 
         payload = {
             "scraped_at": datetime.now(timezone.utc).isoformat(),
-            "category": CATEGORY_NAME,
+            "category": category_name,
+            "category_url": category_url,
             "total_wallpapers": len(all_wallpapers),
             "wallpapers": all_wallpapers
         }
 
-        with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
-        logger.info(f"Successfully generated {OUTPUT_JSON} with {len(all_wallpapers)} live links.")
+        logger.info(f"Saved {len(all_wallpapers)} wallpapers to {output_file}\n")
+
+    def run(self):
+        if not LINKS_CONFIG_FILE.exists():
+            logger.error(f"Configuration file '{LINKS_CONFIG_FILE}' not found! Create it first.")
+            return
+
+        with open(LINKS_CONFIG_FILE, "r", encoding="utf-8") as f:
+            category_links = json.load(f)
+
+        if not isinstance(category_links, list) or not category_links:
+            logger.error("links.json must contain a non-empty list of category URLs.")
+            return
+
+        for url in category_links:
+            self.scrape_category(url)
 
 
 if __name__ == "__main__":
