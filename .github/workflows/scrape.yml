@@ -1,4 +1,4 @@
-name: 4K Wallpapers Link Scraper
+name: 4K Abstract Wallpapers Link Scraper
 
 on:
   schedule:
@@ -33,24 +33,24 @@ jobs:
         run: |
           python scraper.py
 
-      - name: Verify Generated 4k_nature.json
+      - name: Verify Generated 4k_abstract.json
         run: |
-          if [ ! -f 4k_nature.json ]; then
-            echo "::error::4k_nature.json was not created!"
+          if [ ! -f 4k_abstract.json ]; then
+            echo "::error::4k_abstract.json was not created!"
             exit 1
           fi
-          echo "=== Preview 4k_nature.json ==="
-          head -n 25 4k_nature.json
+          echo "=== Preview 4k_abstract.json ==="
+          head -n 25 4k_abstract.json
 
-      - name: Commit 4k_nature.json to Repository
+      - name: Commit 4k_abstract.json to Repository
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add 4k_nature.json
+          git add 4k_abstract.json
           if git diff --staged --quiet; then
-            echo "No changes in 4k_nature.json."
+            echo "No changes in 4k_abstract.json."
           else
-            git commit -m "update: refresh 4k_nature.json live wallpaper links [skip ci]"
+            git commit -m "update: refresh 4k_abstract.json live wallpaper links [skip ci]"
             git push
           fi
 
@@ -60,6 +60,6 @@ jobs:
         run: |
           TAG_NAME="v$(date -u +'%Y.%m.%d-%H%M')"
           gh release create "$TAG_NAME" \
-            4k_nature.json \
-            --title "Nature Wallpaper Links ($TAG_NAME)" \
-            --notes "Automated weekly scrape of live 4K nature wallpaper links."
+            4k_abstract.json \
+            --title "Abstract Wallpaper Links ($TAG_NAME)" \
+            --notes "Automated weekly scrape of live 4K abstract wallpaper links."
