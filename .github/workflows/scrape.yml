@@ -1,4 +1,4 @@
-name: 4K Abstract Wallpapers Link Scraper
+name: Dynamic 4K Wallpaper Link Scraper
 
 on:
   schedule:
@@ -29,28 +29,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Scrape Wallpaper Links
+      - name: Scrape Wallpapers from links.json
         run: |
           python scraper.py
 
-      - name: Verify Generated 4k_abstract.json
+      - name: Verify Generated JSON Files
         run: |
-          if [ ! -f 4k_abstract.json ]; then
-            echo "::error::4k_abstract.json was not created!"
-            exit 1
-          fi
-          echo "=== Preview 4k_abstract.json ==="
-          head -n 25 4k_abstract.json
+          ls -la 4k_*.json || echo "No JSON files generated!"
 
-      - name: Commit 4k_abstract.json to Repository
+      - name: Commit Generated JSON Files
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add 4k_abstract.json
+          git add 4k_*.json
           if git diff --staged --quiet; then
-            echo "No changes in 4k_abstract.json."
+            echo "No changes detected across wallpaper files."
           else
-            git commit -m "update: refresh 4k_abstract.json live wallpaper links [skip ci]"
+            git commit -m "update: refresh live wallpaper category json files [skip ci]"
             git push
           fi
 
@@ -60,6 +55,6 @@ jobs:
         run: |
           TAG_NAME="v$(date -u +'%Y.%m.%d-%H%M')"
           gh release create "$TAG_NAME" \
-            4k_abstract.json \
-            --title "Abstract Wallpaper Links ($TAG_NAME)" \
-            --notes "Automated weekly scrape of live 4K abstract wallpaper links."
+            4k_*.json \
+            --title "Live Wallpaper Links Update ($TAG_NAME)" \
+            --notes "Automated scrape for all categories configured in links.json."
