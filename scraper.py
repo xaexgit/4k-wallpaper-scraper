@@ -1,7 +1,5 @@
 import json
 import logging
-import mimetypes
-import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
@@ -17,7 +15,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler()]
 )
-logger = logging.getLogger("MultiCategoryWallpaperScraper")
+logger = logging.getLogger("WallpaperLinkScraper")
 
 BASE_URL = "https://4kwallpapers.com"
 LINKS_CONFIG_FILE = Path("links.json")
@@ -52,12 +50,9 @@ class WallpaperLinkScraper:
 
     @staticmethod
     def get_category_name(category_url: str) -> str:
-        """Extract category name from URL (e.g. 'https://4kwallpapers.com/cars/' -> 'cars')"""
         parsed = urlparse(category_url)
         path_parts = [p for p in parsed.path.split('/') if p]
-        if path_parts:
-            return path_parts[-1].lower()
-        return "unknown"
+        return path_parts[-1].lower() if path_parts else "unknown"
 
     def parse_listing_page(self, category_url: str, category_name: str, page_num: int) -> List[Dict]:
         clean_base_url = category_url.rstrip("/")
@@ -76,23 +71,16 @@ class WallpaperLinkScraper:
 
         for a_tag in soup.find_all("a", href=True):
             href = a_tag["href"]
-            
-            # Filter for detail page links within this category
             if not (f"/{category_name}/" in href and href.endswith(".html") and href != f"/{category_name}/"):
                 continue
 
-            full_detail_url = href if href.startswith("http") else f"{BASE_URL}{href}"
-
             img_tag = a_tag.find("img")
             source_tag = a_tag.find("source")
-
             raw_img_src = None
 
-            # 1. Try <source srcset="...">
             if source_tag and source_tag.get("srcset"):
                 raw_img_src = source_tag["srcset"].split(",")[0].strip().split(" ")[0]
 
-            # 2. Try <img src="..."> or data-src
             if not raw_img_src and img_tag:
                 raw_img_src = (
                     img_tag.get("src") or 
@@ -111,31 +99,20 @@ class WallpaperLinkScraper:
             elif a_tag.get("title"):
                 title = a_tag["title"].strip()
 
-            id_match = re.search(r"-(\d+)\.html$", href)
-            wallpaper_id = id_match.group(1) if id_match else None
-
-            filename = image_url.split("/")[-1].split("?")[0]
-            ext = filename.split(".")[-1].lower() if "." in filename else "jpg"
-            mime_type, _ = mimetypes.guess_type(filename)
-
+            # Format requested by user
             item = {
-                "id": wallpaper_id,
-                "title": title,
-                "category": category_name,
-                "quality": "4K" if "4k" in title.lower() else "HD",
-                "image_url": image_url,
-                "source_page": full_detail_url,
-                "file_type": mime_type or f"image/{ext}",
-                "file_extension": ext
+                "name": title,
+                "url": image_url,
+                "previewUrl": image_url
             }
 
-            if not any(x["image_url"] == image_url for x in items):
+            if not any(x["url"] == image_url for x in items):
                 items.append(item)
 
-        logger.info(f"[{category_name.upper()}] Extracted {len(items)} live links from page {page_num}")
+        logger.info(f"[{category_name.upper()}] Extracted {len(items)} items from page {page_num}")
         return items
 
-    def scrape_category(self, category_url: str) -> Dict:
+    def scrape_category(self, category_url: str) -> List[Dict]:
         category_name = self.get_category_name(category_url)
         logger.info(f"--- Starting Scrape for Category: '{category_name}' ---")
 
@@ -146,47 +123,39 @@ class WallpaperLinkScraper:
                 break
             all_wallpapers.extend(items)
 
-        return {
-            "category": category_name,
-            "category_url": category_url,
-            "total_wallpapers": len(all_wallpapers),
-            "wallpapers": all_wallpapers
-        }
+        return all_wallpapers
 
     def run(self):
         if not LINKS_CONFIG_FILE.exists():
-            logger.error(f"Configuration file '{LINKS_CONFIG_FILE}' not found! Create it first.")
+            logger.error(f"Configuration file '{LINKS_CONFIG_FILE}' not found!")
             return
 
         with open(LINKS_CONFIG_FILE, "r", encoding="utf-8") as f:
             category_links = json.load(f)
 
         if not isinstance(category_links, list) or not category_links:
-            logger.error("links.json must contain a non-empty list of category URLs.")
+            logger.error("links.json must contain a list of URLs.")
             return
 
-        categories_data = []
-        total_wallpapers_count = 0
-
+        all_wallpapers = []
         for url in category_links:
-            cat_result = self.scrape_category(url)
-            categories_data.append(cat_result)
-            total_wallpapers_count += cat_result["total_wallpapers"]
+            wallpapers = self.scrape_category(url)
+            all_wallpapers.extend(wallpapers)
 
-        payload = {
-            "scraped_at": datetime.now(timezone.utc).isoformat(),
-            "total_categories": len(categories_data),
-            "total_wallpapers": total_wallpapers_count,
-            "data": categories_data
-        }
+        # Deduplicate across categories
+        unique_wallpapers = []
+        seen_urls = set()
+        for wp in all_wallpapers:
+            if wp["url"] not in seen_urls:
+                seen_urls.add(wp["url"])
+                unique_wallpapers.append(wp)
 
-        # Ensure destination directory 'out/' exists
         OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
 
         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+            json.dump(unique_wallpapers, f, indent=2)
 
-        logger.info(f"Successfully generated {OUTPUT_FILE} containing {total_wallpapers_count} wallpapers across {len(categories_data)} categories.")
+        logger.info(f"Successfully generated {OUTPUT_FILE} with {len(unique_wallpapers)} wallpapers.")
 
 
 if __name__ == "__main__":
