@@ -1,15 +1,12 @@
 import json
 import logging
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-import requests
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from curl_cffi import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,32 +18,14 @@ logger = logging.getLogger("AlphaCodersScraper")
 LINKS_CONFIG_FILE = Path("links.json")
 OUTPUT_FILE = Path("out/out.json")
 
-# Number of pages to scrape per link
+# Number of pages to scrape per category link
 MAX_PAGES = 3
 
 
 class AlphaCodersScraper:
     def __init__(self):
-        self.session = self._init_session()
-
-    def _init_session(self) -> requests.Session:
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=2,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"]
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://wall.alphacoders.com/",
-        })
-        return session
+        # Impersonate Chrome browser TLS fingerprint to bypass Cloudflare checks
+        self.session = requests.Session(impersonate="chrome")
 
     @staticmethod
     def build_page_url(base_url: str, page_num: int) -> str:
@@ -74,7 +53,6 @@ class AlphaCodersScraper:
         Converts AlphaCoders thumbnail links (e.g., .../thumb-350-12345.webp)
         to full resolution wallpaper links (e.g., .../12345.jpg or .png).
         """
-        # Replace thumbnail prefix patterns like thumb-350- or thumbbig-
         full_url = re.sub(r"/thumb(big)?(-\d+)?-", "/", thumb_url)
         return full_url
 
@@ -83,54 +61,72 @@ class AlphaCodersScraper:
         logger.info(f"Fetching page {page_num}: {page_url}")
 
         try:
-            resp = self.session.get(page_url, timeout=15)
+            resp = self.session.get(
+                page_url, 
+                timeout=20,
+                headers={
+                    "Referer": "https://wall.alphacoders.com/",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+            )
             resp.raise_for_status()
-        except requests.RequestException as e:
+        except Exception as e:
             logger.error(f"Failed to fetch page {page_num}: {e}")
             return []
 
         soup = BeautifulSoup(resp.text, "html.parser")
         items = []
 
-        # AlphaCoders images are usually wrapped inside container divs/cards
-        img_tags = soup.find_all("img")
+        cards = soup.select(".thumb-container-big, .thumb-container, .boxcard, div[class*='thumb']")
+        if not cards:
+            cards = [soup]
 
-        for img in img_tags:
-            # Look for thumbnail image sources
-            src = (
-                img.get("data-src") or 
-                img.get("src") or 
-                img.get("data-original")
-            )
+        for container in cards:
+            img_tags = container.find_all(["img", "source"])
 
-            if not src or "alphacoders.com" not in src:
-                continue
+            for img in img_tags:
+                raw_src = None
+                if img.get("srcset"):
+                    raw_src = img["srcset"].split(",")[0].strip().split(" ")[0]
+                if not raw_src:
+                    raw_src = img.get("data-src") or img.get("src") or img.get("data-original")
 
-            # Ensure image link has protocol
-            if src.startswith("//"):
-                src = f"https:{src}"
-            elif not src.startswith("http"):
-                src = f"https://images.alphacoders.com/{src.lstrip('/')}"
+                if not raw_src:
+                    continue
 
-            # Only target actual wallpaper asset URLs
-            if not re.search(r"/(thumb|images)/", src):
-                continue
+                if not re.search(r"(thumb|images|alphacoders)", raw_src, re.IGNORECASE):
+                    continue
+                if any(x in raw_src for x in ["avatar", "logo", "icon", "badge", "profile"]):
+                    continue
 
-            # Extract title / name
-            title = img.get("alt") or img.get("title") or "Alpha Coders Wallpaper"
-            title = title.strip()
+                if raw_src.startswith("//"):
+                    src = f"https:{raw_src}"
+                elif raw_src.startswith("/"):
+                    src = f"https://wall.alphacoders.com{raw_src}"
+                elif not raw_src.startswith("http"):
+                    src = f"https://images.alphacoders.com/{raw_src}"
+                else:
+                    src = raw_src
 
-            preview_url = src
-            full_image_url = self.get_full_res_url(src)
+                title = img.get("alt") or img.get("title") or ""
+                if not title and hasattr(container, "find"):
+                    a_tag = container.find("a", title=True)
+                    if a_tag:
+                        title = a_tag["title"]
 
-            item = {
-                "name": title,
-                "url": full_image_url,
-                "previewUrl": preview_url
-            }
+                title = title.strip() or "Alpha Coders Wallpaper"
 
-            if not any(x["previewUrl"] == preview_url for x in items):
-                items.append(item)
+                preview_url = src
+                full_image_url = self.get_full_res_url(src)
+
+                item = {
+                    "name": title,
+                    "url": full_image_url,
+                    "previewUrl": preview_url
+                }
+
+                if not any(x["previewUrl"] == preview_url for x in items):
+                    items.append(item)
 
         logger.info(f"Extracted {len(items)} wallpapers from page {page_num}")
         return items
@@ -164,7 +160,6 @@ class AlphaCodersScraper:
             items = self.scrape_url(url)
             all_wallpapers.extend(items)
 
-        # Remove duplicates
         unique_wallpapers = []
         seen_urls = set()
         for wp in all_wallpapers:
