@@ -21,15 +21,17 @@ OUTPUT_FILE = Path("out/out.json")
 # Number of pages to scrape per category link
 MAX_PAGES = 3
 
+# Strictly allowed wallpaper image extensions
+ALLOWED_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
+
 
 class AlphaCodersScraper:
     def __init__(self):
-        # Impersonate Chrome browser TLS fingerprint to bypass Cloudflare checks
+        # Impersonate Chrome browser TLS fingerprint to bypass Cloudflare
         self.session = requests.Session(impersonate="chrome")
 
     @staticmethod
     def build_page_url(base_url: str, page_num: int) -> str:
-        """Appends page query param cleanly regardless of existing query strings."""
         if page_num == 1:
             return base_url
 
@@ -48,11 +50,39 @@ class AlphaCodersScraper:
         ))
 
     @staticmethod
+    def is_valid_wallpaper_url(url: str) -> bool:
+        """
+        Strictly validates that the URL points directly to a raster image file (.jpg, .png, .webp)
+        and rejects SVGs, HTML/PHP pages, site icons, avatars, and logos.
+        """
+        if not url or not isinstance(url, str):
+            return False
+
+        url_lower = url.lower()
+
+        # Reject vector SVGs and HTML/PHP page links
+        if url_lower.endswith('.svg') or '.svg?' in url_lower:
+            return False
+        if any(url_lower.endswith(ext) for ext in ['.html', '.php', '.js', '.css', '.json']):
+            return False
+
+        # Reject site UI assets (avatars, site logos, badges, icons)
+        ignore_keywords = ['avatar', 'logo', 'icon', 'badge', 'profile', 'banner', 'button', 'svg']
+        if any(kw in url_lower for kw in ignore_keywords):
+            return False
+
+        # Check for valid wallpaper extension
+        parsed_path = urlparse(url_lower).path
+        has_valid_ext = any(parsed_path.endswith(ext) or f"{ext}?" in url_lower for ext in ALLOWED_EXTENSIONS)
+
+        # Must originate from AlphaCoders image host
+        is_alphacoders_image = "alphacoders.com" in url_lower and any(sub in url_lower for sub in ["/thumb", "/images", "images"])
+
+        return has_valid_ext and is_alphacoders_image
+
+    @staticmethod
     def get_full_res_url(thumb_url: str) -> str:
-        """
-        Converts AlphaCoders thumbnail links (e.g., .../thumb-350-12345.webp)
-        to full resolution wallpaper links (e.g., .../12345.jpg or .png).
-        """
+        """Converts thumbnail links to full resolution wallpaper links."""
         full_url = re.sub(r"/thumb(big)?(-\d+)?-", "/", thumb_url)
         return full_url
 
@@ -94,11 +124,7 @@ class AlphaCodersScraper:
                 if not raw_src:
                     continue
 
-                if not re.search(r"(thumb|images|alphacoders)", raw_src, re.IGNORECASE):
-                    continue
-                if any(x in raw_src for x in ["avatar", "logo", "icon", "badge", "profile"]):
-                    continue
-
+                # Normalize relative image URLs
                 if raw_src.startswith("//"):
                     src = f"https:{raw_src}"
                 elif raw_src.startswith("/"):
@@ -107,6 +133,10 @@ class AlphaCodersScraper:
                     src = f"https://images.alphacoders.com/{raw_src}"
                 else:
                     src = raw_src
+
+                # Apply strict filtering (removes SVGs, non-image files, UI assets)
+                if not self.is_valid_wallpaper_url(src):
+                    continue
 
                 title = img.get("alt") or img.get("title") or ""
                 if not title and hasattr(container, "find"):
@@ -119,6 +149,10 @@ class AlphaCodersScraper:
                 preview_url = src
                 full_image_url = self.get_full_res_url(src)
 
+                # Ensure full_image_url also passes extension check
+                if not any(full_image_url.lower().split("?")[0].endswith(ext) for ext in ALLOWED_EXTENSIONS):
+                    continue
+
                 item = {
                     "name": title,
                     "url": full_image_url,
@@ -128,7 +162,7 @@ class AlphaCodersScraper:
                 if not any(x["previewUrl"] == preview_url for x in items):
                     items.append(item)
 
-        logger.info(f"Extracted {len(items)} wallpapers from page {page_num}")
+        logger.info(f"Extracted {len(items)} valid wallpapers from page {page_num}")
         return items
 
     def scrape_url(self, target_url: str) -> List[Dict]:
@@ -172,7 +206,7 @@ class AlphaCodersScraper:
         with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
             json.dump(unique_wallpapers, f, indent=2)
 
-        logger.info(f"Successfully generated {OUTPUT_FILE} with {len(unique_wallpapers)} wallpapers.")
+        logger.info(f"Successfully generated {OUTPUT_FILE} with {len(unique_wallpapers)} valid wallpapers.")
 
 
 if __name__ == "__main__":
