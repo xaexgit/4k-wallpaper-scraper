@@ -1,163 +1,65 @@
 import json
-import logging
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Dict, List
-from urllib.parse import urlparse
-
+import os
+import re
 import requests
 from bs4 import BeautifulSoup
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
-logger = logging.getLogger("WallpaperLinkScraper")
+# Base URL for Alpha Coders Wallpapers
+BASE_URL = "https://wall.alphacoders.com/"
 
-BASE_URL = "https://4kwallpapers.com"
-LINKS_CONFIG_FILE = Path("links.json")
-OUTPUT_FILE = Path("out/out.json")
+# Request headers to mimic a browser request
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
 
-# Number of listing pages to scrape per category
-MAX_PAGES = 3
+def fetch_wallpaper_links(base_url, total_pages=2):
+    """Scrapes wallpaper links from Alpha Coders across specified pages."""
+    wallpaper_urls = []
 
-
-class WallpaperLinkScraper:
-    def __init__(self):
-        self.session = self._init_session()
-
-    def _init_session(self) -> requests.Session:
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=2,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"]
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Referer": "https://4kwallpapers.com/",
-        })
-        return session
-
-    @staticmethod
-    def get_category_name(category_url: str) -> str:
-        parsed = urlparse(category_url)
-        path_parts = [p for p in parsed.path.split('/') if p]
-        return path_parts[-1].lower() if path_parts else "unknown"
-
-    def parse_listing_page(self, category_url: str, category_name: str, page_num: int) -> List[Dict]:
-        clean_base_url = category_url.rstrip("/")
-        url = clean_base_url if page_num == 1 else f"{clean_base_url}/?page={page_num}"
-        logger.info(f"[{category_name.upper()}] Fetching listing page {page_num}: {url}")
+    for page in range(1, total_pages + 1):
+        target_url = f"{base_url}?page={page}" if page > 1 else base_url
+        print(f"Fetching page {page}: {target_url}")
 
         try:
-            resp = self.session.get(url, timeout=15)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            logger.error(f"[{category_name.upper()}] Failed to fetch page {page_num}: {e}")
-            return []
+            response = requests.get(target_url, headers=HEADERS, timeout=15)
+            response.raise_for_status()
+        except requests.RequestException as err:
+            print(f"Error fetching page {page}: {err}")
+            continue
 
-        soup = BeautifulSoup(resp.text, "html.parser")
-        items = []
+        soup = BeautifulSoup(response.text, "html.parser")
 
-        for a_tag in soup.find_all("a", href=True):
-            href = a_tag["href"]
-            if not (f"/{category_name}/" in href and href.endswith(".html") and href != f"/{category_name}/"):
-                continue
+        # Find thumbnail containers on Alpha Coders
+        containers = soup.select(".thumb-container-big, .thumb-container")
 
-            img_tag = a_tag.find("img")
-            source_tag = a_tag.find("source")
-            raw_img_src = None
+        for container in containers:
+            # Locate individual wallpaper view link
+            link_tag = container.find("a", href=re.compile(r"big\.php\?i="))
+            img_tag = container.find("img")
 
-            if source_tag and source_tag.get("srcset"):
-                raw_img_src = source_tag["srcset"].split(",")[0].strip().split(" ")[0]
+            if link_tag and link_tag.get("href"):
+                href = link_tag["href"]
+                full_link = f"https://wall.alphacoders.com/{href}" if not href.startswith("http") else href
+                wallpaper_urls.append(full_link)
+            elif img_tag and (img_tag.get("src") or img_tag.get("data-src")):
+                img_src = img_tag.get("data-src") or img_tag.get("src")
+                wallpaper_urls.append(img_src)
 
-            if not raw_img_src and img_tag:
-                raw_img_src = (
-                    img_tag.get("src") or 
-                    img_tag.get("data-src") or 
-                    img_tag.get("srcset")
-                )
+    # Remove duplicates while maintaining order
+    unique_links = list(dict.fromkeys(wallpaper_urls))
+    return unique_links
 
-            if not raw_img_src:
-                continue
-
-            image_url = raw_img_src if raw_img_src.startswith("http") else f"{BASE_URL}{raw_img_src}"
-
-            title = f"4K {category_name.title()} Wallpaper"
-            if img_tag and img_tag.get("alt"):
-                title = img_tag["alt"].strip()
-            elif a_tag.get("title"):
-                title = a_tag["title"].strip()
-
-            # Format requested by user
-            item = {
-                "name": title,
-                "url": image_url,
-                "previewUrl": image_url
-            }
-
-            if not any(x["url"] == image_url for x in items):
-                items.append(item)
-
-        logger.info(f"[{category_name.upper()}] Extracted {len(items)} items from page {page_num}")
-        return items
-
-    def scrape_category(self, category_url: str) -> List[Dict]:
-        category_name = self.get_category_name(category_url)
-        logger.info(f"--- Starting Scrape for Category: '{category_name}' ---")
-
-        all_wallpapers = []
-        for page in range(1, MAX_PAGES + 1):
-            items = self.parse_listing_page(category_url, category_name, page)
-            if not items:
-                break
-            all_wallpapers.extend(items)
-
-        return all_wallpapers
-
-    def run(self):
-        if not LINKS_CONFIG_FILE.exists():
-            logger.error(f"Configuration file '{LINKS_CONFIG_FILE}' not found!")
-            return
-
-        with open(LINKS_CONFIG_FILE, "r", encoding="utf-8") as f:
-            category_links = json.load(f)
-
-        if not isinstance(category_links, list) or not category_links:
-            logger.error("links.json must contain a list of URLs.")
-            return
-
-        all_wallpapers = []
-        for url in category_links:
-            wallpapers = self.scrape_category(url)
-            all_wallpapers.extend(wallpapers)
-
-        # Deduplicate across categories
-        unique_wallpapers = []
-        seen_urls = set()
-        for wp in all_wallpapers:
-            if wp["url"] not in seen_urls:
-                seen_urls.add(wp["url"])
-                unique_wallpapers.append(wp)
-
-        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(unique_wallpapers, f, indent=2)
-
-        logger.info(f"Successfully generated {OUTPUT_FILE} with {len(unique_wallpapers)} wallpapers.")
-
+def save_to_json(data, filename="links.json"):
+    """Saves output links to JSON file."""
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+    print(f"Done! Saved {len(data)} links to {filename}")
 
 if __name__ == "__main__":
-    scraper = WallpaperLinkScraper()
-    scraper.run()
+    # Adjust total_pages as needed
+    links = fetch_wallpaper_links(BASE_URL, total_pages=3)
+    save_to_json(links, "links.json")
