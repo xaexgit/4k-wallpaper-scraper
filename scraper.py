@@ -1,13 +1,11 @@
 import json
-import os
-import re
 import requests
 from bs4 import BeautifulSoup
 
-# Base URL for Alpha Coders Wallpapers
-BASE_URL = "https://wall.alphacoders.com/"
+# Base URL set to the main Alpha Coders portal
+BASE_URL = "https://alphacoders.com/"
 
-# Request headers to mimic a browser request
+# Standard headers to prevent 403 Forbidden errors
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -16,9 +14,9 @@ HEADERS = {
     )
 }
 
-def fetch_wallpaper_links(base_url, total_pages=2):
-    """Scrapes wallpaper links from Alpha Coders across specified pages."""
-    wallpaper_urls = []
+def fetch_alpha_coders_links(base_url, total_pages=2):
+    """Scrapes content links from the main Alpha Coders hub across specified pages."""
+    item_urls = []
 
     for page in range(1, total_pages + 1):
         target_url = f"{base_url}?page={page}" if page > 1 else base_url
@@ -33,33 +31,39 @@ def fetch_wallpaper_links(base_url, total_pages=2):
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Find thumbnail containers on Alpha Coders
-        containers = soup.select(".thumb-container-big, .thumb-container")
+        # Select thumbnail containers used across Alpha Coders portals
+        containers = soup.select(".thumb-container-big, .thumb-container, .item, .thumb")
 
         for container in containers:
-            # Locate individual wallpaper view link
-            link_tag = container.find("a", href=re.compile(r"big\.php\?i="))
+            link_tag = container.find("a", href=True)
             img_tag = container.find("img")
 
             if link_tag and link_tag.get("href"):
                 href = link_tag["href"]
-                full_link = f"https://wall.alphacoders.com/{href}" if not href.startswith("http") else href
-                wallpaper_urls.append(full_link)
-            elif img_tag and (img_tag.get("src") or img_tag.get("data-src")):
+                # Resolve protocol-relative and root-relative URLs
+                if href.startswith("//"):
+                    href = f"https:{href}"
+                elif href.startswith("/"):
+                    href = f"https://alphacoders.com{href}"
+                
+                item_urls.append(href)
+            elif img_tag:
                 img_src = img_tag.get("data-src") or img_tag.get("src")
-                wallpaper_urls.append(img_src)
+                if img_src:
+                    if img_src.startswith("//"):
+                        img_src = f"https:{img_src}"
+                    item_urls.append(img_src)
 
-    # Remove duplicates while maintaining order
-    unique_links = list(dict.fromkeys(wallpaper_urls))
+    # Deduplicate list while preserving order
+    unique_links = list(dict.fromkeys(item_urls))
     return unique_links
 
 def save_to_json(data, filename="links.json"):
-    """Saves output links to JSON file."""
+    """Saves output links into a JSON file."""
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
     print(f"Done! Saved {len(data)} links to {filename}")
 
 if __name__ == "__main__":
-    # Adjust total_pages as needed
-    links = fetch_wallpaper_links(BASE_URL, total_pages=3)
+    links = fetch_alpha_coders_links(BASE_URL, total_pages=3)
     save_to_json(links, "links.json")
