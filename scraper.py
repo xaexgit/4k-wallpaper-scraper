@@ -1,8 +1,9 @@
 import json
 import logging
 import re
+import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
@@ -18,10 +19,13 @@ logger = logging.getLogger("AlphaCodersScraper")
 LINKS_CONFIG_FILE = Path("links.json")
 OUTPUT_FILE = Path("out/out.json")
 
-# Number of pages to scrape per category link
-MAX_PAGES = 3
+# Set to None to scrape ALL available pages, or an integer (e.g., 50) to cap
+MAX_PAGES: Optional[int] = None
 
-# Strictly allowed wallpaper image extensions
+# Pause between requests in seconds to be respectful to the server
+REQUEST_DELAY = 1.0
+
+# Strictly allowed wallpaper extensions
 ALLOWED_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 
 
@@ -52,7 +56,7 @@ class AlphaCodersScraper:
     @staticmethod
     def is_valid_wallpaper_url(url: str) -> bool:
         """
-        Strictly validates that the URL points directly to a raster image file (.jpg, .png, .webp)
+        Validates that the URL points directly to a raster image file
         and rejects SVGs, HTML/PHP pages, site icons, avatars, and logos.
         """
         if not url or not isinstance(url, str):
@@ -60,29 +64,29 @@ class AlphaCodersScraper:
 
         url_lower = url.lower()
 
-        # Reject vector SVGs and HTML/PHP page links
+        # Reject vector SVGs and standard webpage documents
         if url_lower.endswith('.svg') or '.svg?' in url_lower:
             return False
         if any(url_lower.endswith(ext) for ext in ['.html', '.php', '.js', '.css', '.json']):
             return False
 
-        # Reject site UI assets (avatars, site logos, badges, icons)
+        # Reject UI assets
         ignore_keywords = ['avatar', 'logo', 'icon', 'badge', 'profile', 'banner', 'button', 'svg']
         if any(kw in url_lower for kw in ignore_keywords):
             return False
 
-        # Check for valid wallpaper extension
+        # Check for valid raster extension
         parsed_path = urlparse(url_lower).path
         has_valid_ext = any(parsed_path.endswith(ext) or f"{ext}?" in url_lower for ext in ALLOWED_EXTENSIONS)
 
-        # Must originate from AlphaCoders image host
+        # Ensure image originates from AlphaCoders CDNs
         is_alphacoders_image = "alphacoders.com" in url_lower and any(sub in url_lower for sub in ["/thumb", "/images", "images"])
 
         return has_valid_ext and is_alphacoders_image
 
     @staticmethod
     def get_full_res_url(thumb_url: str) -> str:
-        """Converts thumbnail links to full resolution wallpaper links."""
+        """Converts AlphaCoders thumbnail links to full resolution wallpaper links."""
         full_url = re.sub(r"/thumb(big)?(-\d+)?-", "/", thumb_url)
         return full_url
 
@@ -93,7 +97,7 @@ class AlphaCodersScraper:
         try:
             resp = self.session.get(
                 page_url, 
-                timeout=20,
+                timeout=25,
                 headers={
                     "Referer": "https://wall.alphacoders.com/",
                     "Accept-Language": "en-US,en;q=0.9",
@@ -124,7 +128,7 @@ class AlphaCodersScraper:
                 if not raw_src:
                     continue
 
-                # Normalize relative image URLs
+                # Normalize relative URLs
                 if raw_src.startswith("//"):
                     src = f"https:{raw_src}"
                 elif raw_src.startswith("/"):
@@ -134,7 +138,6 @@ class AlphaCodersScraper:
                 else:
                     src = raw_src
 
-                # Apply strict filtering (removes SVGs, non-image files, UI assets)
                 if not self.is_valid_wallpaper_url(src):
                     continue
 
@@ -144,12 +147,12 @@ class AlphaCodersScraper:
                     if a_tag:
                         title = a_tag["title"]
 
-                title = title.strip() or "Alpha Coders Wallpaper"
+                title = title.strip() or "Sci-Fi Wallpaper"
 
                 preview_url = src
                 full_image_url = self.get_full_res_url(src)
 
-                # Ensure full_image_url also passes extension check
+                # Validate full resolution URL extension
                 if not any(full_image_url.lower().split("?")[0].endswith(ext) for ext in ALLOWED_EXTENSIONS):
                     continue
 
@@ -162,18 +165,51 @@ class AlphaCodersScraper:
                 if not any(x["previewUrl"] == preview_url for x in items):
                     items.append(item)
 
-        logger.info(f"Extracted {len(items)} valid wallpapers from page {page_num}")
+        logger.info(f"Page {page_num}: Found {len(items)} wallpapers")
         return items
 
-    def scrape_url(self, target_url: str) -> List[Dict]:
-        logger.info(f"--- Scraping URL: '{target_url}' ---")
-        wallpapers = []
+    def save_results(self, wallpapers: List[Dict]):
+        """Helper method to write current output safely to disk."""
+        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+            json.dump(wallpapers, f, indent=2)
 
-        for page in range(1, MAX_PAGES + 1):
-            page_items = self.parse_listing_page(target_url, page)
-            if not page_items:
+    def scrape_url(self, target_url: str) -> List[Dict]:
+        logger.info(f"--- Starting pagination for: {target_url} ---")
+        wallpapers = []
+        seen_urls = set()
+        page = 1
+
+        while True:
+            if MAX_PAGES is not None and page > MAX_PAGES:
+                logger.info(f"Reached configured limit of MAX_PAGES={MAX_PAGES}")
                 break
-            wallpapers.extend(page_items)
+
+            page_items = self.parse_listing_page(target_url, page)
+            
+            # Stop if no wallpapers were found on the page (end of category)
+            if not page_items:
+                logger.info(f"No wallpapers found on page {page}. Scraping complete.")
+                break
+
+            new_count = 0
+            for item in page_items:
+                if item["previewUrl"] not in seen_urls:
+                    seen_urls.add(item["previewUrl"])
+                    wallpapers.append(item)
+                    new_count += 1
+
+            # If a page yields zero unique items, we've hit repeated content or end
+            if new_count == 0 and page > 1:
+                logger.info("No new unique wallpapers returned. Stopping pagination.")
+                break
+
+            # Save progress incrementally to avoid data loss
+            self.save_results(wallpapers)
+            logger.info(f"Saved total {len(wallpapers)} wallpapers to {OUTPUT_FILE}")
+
+            page += 1
+            time.sleep(REQUEST_DELAY)
 
         return wallpapers
 
@@ -189,24 +225,8 @@ class AlphaCodersScraper:
             logger.error("links.json must contain a list of URLs.")
             return
 
-        all_wallpapers = []
         for url in category_links:
-            items = self.scrape_url(url)
-            all_wallpapers.extend(items)
-
-        unique_wallpapers = []
-        seen_urls = set()
-        for wp in all_wallpapers:
-            if wp["previewUrl"] not in seen_urls:
-                seen_urls.add(wp["previewUrl"])
-                unique_wallpapers.append(wp)
-
-        OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            json.dump(unique_wallpapers, f, indent=2)
-
-        logger.info(f"Successfully generated {OUTPUT_FILE} with {len(unique_wallpapers)} valid wallpapers.")
+            self.scrape_url(url)
 
 
 if __name__ == "__main__":
